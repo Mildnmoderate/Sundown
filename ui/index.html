@@ -86,7 +86,7 @@ pre{white-space:pre-wrap;word-break:break-word;margin:6px 0 0;background:#0b0d12
 <script>
 const SYSTEMS=['okta','github','slack','google','expenses'];
 const LABEL={okta:'Okta',github:'GitHub',slack:'Slack',google:'Google Workspace',expenses:'Expenses & cards'};
-let steps={}, currentTask=null, creds={}, truth={}, cfg={}, openSys=null;
+let steps={}, currentTask=null, creds={}, truth={}, cfg={}, openSys=null, seenEvents=new Set();
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -117,6 +117,11 @@ function ingest(ev,fromHistory){
   if(ev.taskId!=null){
     if(!currentTask)currentTask=String(ev.taskId);
     if(String(ev.taskId)!==currentTask)return;
+  }
+  if(ev._id!=null){
+    const id=String(ev._id);
+    if(seenEvents.has(id))return;
+    seenEvents.add(id);
   }
   addFeed(ev);
   const sys=ev.system;
@@ -180,6 +185,7 @@ function drawEvents(){
 $('d-close').onclick=()=>{openSys=null;$('drawer').classList.remove('open')};
 $('d-probe').onclick=async()=>{
   const tok=creds[openSys];
+  if(!tok){$('d-probe-out').textContent='No token loaded. Check that the systems API is reachable, then try again.';return}
   try{
     const r=await fetch('/'+openSys+'/me',{headers:{Authorization:'Bearer '+tok}});
     const b=await r.text();
@@ -190,14 +196,17 @@ $('d-probe').onclick=async()=>{
 // ---- actions --------------------------------------------------------------
 $('start').onclick=async()=>{
   try{
+    const state=await j('/control/state');
+    if(!state.agent.running)await j('/control/start_agent','POST');
     const r=await j('/control/start','POST',{employee:$('emp').value});
-    blank();$('feed').innerHTML='';currentTask=String(r.taskId);render();
+    blank();$('feed').innerHTML='';seenEvents.clear();currentTask=String(r.taskId);render();
     toast('Task queued: '+r.taskId.slice(-6)+'. Waiting for the agent to claim it.');
+    poll();
   }catch(e){toast('Start failed: '+e.message)}
 };
 $('kill').onclick=async()=>{try{const r=await j('/control/kill_agent','POST');toast('Agent killed (pid '+r.killed_pid+')');poll()}catch(e){toast(e.message)}};
 $('restart').onclick=async()=>{try{const r=await j('/control/start_agent','POST');toast('Agent restarted (pid '+r.pid+')');poll()}catch(e){toast(e.message)}};
-$('reset').onclick=async()=>{try{await j('/control/reset','POST',{clear_db:true});blank();currentTask=null;$('feed').innerHTML='';toast('Demo reset');poll()}catch(e){toast(e.message)}};
+$('reset').onclick=async()=>{try{await j('/control/reset','POST',{clear_db:true});blank();currentTask=null;seenEvents.clear();$('feed').innerHTML='';toast('Demo reset');poll()}catch(e){toast(e.message)}};
 document.querySelectorAll('button.tog').forEach(b=>b.onclick=async()=>{
   const sys=b.dataset.sys,key=b.dataset.key,on=b.classList.contains('on');
   const value=key==='version'?(on?'v1':'v2'):key==='delay_seconds'?(on?0:20):!on;
@@ -213,5 +222,11 @@ $('emp').onchange=()=>{loadCreds();render()};
     try{const hist=await j('/events?limit=300');
     if(hist.length)currentTask=String(hist[hist.length-1].taskId);
     hist.forEach(e=>ingest(e,true));render()}catch(e){}
+  const stream=new EventSource('/stream');
+  stream.addEventListener('event',e=>{
+    try{ingest(JSON.parse(e.data),false)}
+    catch(err){toast('Could not read a live event: '+err.message)}
+  });
+  setInterval(poll,2000);
 })();
 </script></body></html>

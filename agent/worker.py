@@ -170,17 +170,7 @@ def warm_up():
         print(f"[warmup] skipped: {e!r}")
 
 
-def main():
-    PID_FILE.write_text(str(os.getpid()))
-    atexit.register(lambda: PID_FILE.unlink(missing_ok=True))
-    warm_up()
-    owner = f"agent-{uuid.uuid4().hex[:6]}"
-    print(f"{owner} up (pid {os.getpid()}), waiting for work...")
-    task = None
-    while task is None:
-        task = claim(owner)
-        if task is None:
-            time.sleep(1)
+def process_task(owner, task):
     tid, user = task["_id"], task["employee"]
 
     if "steps" not in task:                           # new task (not a resume)
@@ -210,9 +200,28 @@ def main():
     emit(tid, "task", "verified" if all_ok else "failed",
          "all access proven dead" if all_ok else "some steps unverified: needs a human")
 
-    summary = narrate.audit_summary(tid, user, all_ok)      # Groq: explains, never decides
-    if summary:
-        emit(tid, "task", "verified" if all_ok else "failed", "AUDIT SUMMARY (Groq): " + summary)
+    try:
+        summary = narrate.audit_summary(tid, user, all_ok)  # Groq: explains, never decides
+        if summary:
+            emit(tid, "task", "verified" if all_ok else "failed", "AUDIT SUMMARY (Groq): " + summary)
+    finally:
+        stop.set()
+        heartbeat_thread.join()
 
-    stop.set()
-    heartbeat_thread.join()
+
+def main():
+    PID_FILE.write_text(str(os.getpid()))
+    atexit.register(lambda: PID_FILE.unlink(missing_ok=True))
+    warm_up()
+    owner = f"agent-{uuid.uuid4().hex[:6]}"
+    print(f"{owner} up (pid {os.getpid()}), waiting for work...")
+    while True:
+        task = claim(owner)
+        if task is None:
+            time.sleep(1)
+            continue
+        process_task(owner, task)
+
+
+if __name__ == "__main__":
+    main()
