@@ -23,7 +23,7 @@ except Exception as e:
 
 # 2. LLM
 try:
-    out = chat("Reply with the single word OK.", max_tokens=10)
+    out = chat("Reply with the single word OK.", max_tokens=100)
     report("LLM (Groq)", True, f"replied: {out.strip()[:30]}")
 except Exception as e:
     report("LLM (Groq)", False, str(e)[:150])
