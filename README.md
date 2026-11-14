@@ -70,10 +70,17 @@ cp .env.example .env                                 # fill in MONGODB_URI, LLM_
 python -m scripts.setup_db                           # collections + Vector Search index (once)
 python -m scripts.check_all                          # health check: Atlas, LLM, embeddings, index, change streams
 
-# Terminal 1: mock systems + UI at http://localhost:8001
+# Seed adaptation data for the Okta drift demo (replaces all experiences)
+python -m scripts.seed_experiences
+
+# Terminal 1: set AGENT_CMD before starting the API so the UI can restart the worker
+export AGENT_CMD="python -m agent.worker"
+# PowerShell: $env:AGENT_CMD = "python -m agent.worker"
+# Start the mock systems + UI at http://localhost:8001
 python -m uvicorn systems.main:app --port 8001
 
-# Terminal 2: the agent worker (see agent docs)
+# Terminal 2: run the worker; it waits for tasks and keeps running
+python -m agent.worker
 ```
 
 ## Demo

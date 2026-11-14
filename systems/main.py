@@ -245,6 +245,13 @@ def pid_running(pid: int | None) -> bool:
                              capture_output=True, text=True).stdout
         return str(pid) in out
     try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        close = stat.rfind(")")
+        if close >= 0 and stat[close + 2:close + 3] == "Z":
+            return False
+    except OSError:
+        pass
+    try:
         os.kill(pid, 0)
         return True
     except OSError:
