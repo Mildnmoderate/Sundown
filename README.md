@@ -3,8 +3,7 @@
 **An offboarding agent that doesn't stop until the ex-employee's access is actually dead.**
 
 Built for the MongoDB Agents in Context hackathon (Toronto), track **Finish the Job**.
-Everything in this repository was written during the event.
-
+The agent, mock systems, UI and tests were built during the event.
 ## The problem
 
 When someone leaves, "revoke access" spans five systems that don't hold still. A 200 OK
@@ -89,5 +88,4 @@ See [DEMO.md](DEMO.md) for the 3-minute live script and the 1-minute video shot 
 
 ## Stack
 
-Python, FastAPI, MongoDB Atlas (collections, change streams, Vector Search), Groq-hosted LLM,
-sentence-transformers embeddings. No Streamlit.
+Python, FastAPI, MongoDB Atlas (collections, change streams, Vector Search), Groq (explains fixes and writes audit summaries; never decides verification), sentence-transformers embeddings. No Streamlit.

@@ -210,9 +210,8 @@ $('emp').onchange=()=>{loadCreds();render()};
 // ---- boot -----------------------------------------------------------------
 (async()=>{
   await loadCreds();render();await poll();
-  try{const hist=await j('/events?limit=300');hist.forEach(e=>ingest(e,true));render()}catch(e){}
-  const es=new EventSource('/stream');
-  es.addEventListener('event',m=>{try{ingest(JSON.parse(m.data),false)}catch(e){}});
-  setInterval(poll,1500);
+    try{const hist=await j('/events?limit=300');
+    if(hist.length)currentTask=String(hist[hist.length-1].taskId);
+    hist.forEach(e=>ingest(e,true));render()}catch(e){}
 })();
 </script></body></html>

@@ -1,6 +1,5 @@
 .env
-.agent.pid
-__pycache__/
-*.py[cod]
 .venv/
-venv/
+__pycache__/
+*.pyc
+.agent.pid

@@ -1,10 +1,11 @@
-"""Sundown agent worker. Code owns the loop; only a successful probe can mark a step verified."""
+"""Sundown agent worker. Code owns the loop; only a successful probe can mark a step verified.
+Groq (via drift.py and narrate.py) only explains and summarizes. It never decides."""
 import atexit, os, threading, time, uuid, datetime as dt
 from pathlib import Path
 import httpx
 from pymongo import ReturnDocument
 from common.db import db
-from agent import drift
+from agent import drift, narrate
 
 BASE = os.environ.get("SYSTEMS_URL", "http://localhost:8001")
 ROOT = Path(__file__).resolve().parent.parent
@@ -13,26 +14,38 @@ LEASE = 6                                            # seconds
 PAUSE = float(os.environ.get("AGENT_PAUSE", "1.5"))  # demo pacing; set 0 to disable
 SYSTEMS = ["okta", "github", "slack", "google", "expenses"]
 
+# systems known to propagate slowly: keep probing, do not resend
+WINDOWS = {"google": 30}
+
 ESCALATE = {"github": {"method": "POST", "path": "/github/revoke_sessions",
                        "body": {"user_id": "{user}"}}}
 
-def now(): return dt.datetime.now(dt.timezone.utc)
+
+def now():
+    return dt.datetime.now(dt.timezone.utc)
+
 
 def default_action(system):
     return {"method": "POST", "path": f"/{system}/remove_user", "body": {"user_id": "{user}"}}
 
+
 def fill(obj, user):
-    if isinstance(obj, str): return obj.replace("{user}", user)
-    if isinstance(obj, dict): return {k: fill(v, user) for k, v in obj.items()}
+    if isinstance(obj, str):
+        return obj.replace("{user}", user)
+    if isinstance(obj, dict):
+        return {k: fill(v, user) for k, v in obj.items()}
     return obj
+
 
 def emit(tid, system, state, detail, evidence=None):
     db()["events"].insert_one({"taskId": str(tid), "system": system, "state": state,
                                "detail": detail, "evidence": evidence, "ts": now()})
     print(f"[{system}] {state}: {detail}")
 
+
 def set_step(tid, system, **f):
     db()["tasks"].update_one({"_id": tid}, {"$set": {f"steps.{system}.{k}": v for k, v in f.items()}})
+
 
 def probe(system, token):
     """Ground truth. Only HTTP 401 counts as 'dead'. A network error proves nothing."""
@@ -43,6 +56,7 @@ def probe(system, token):
     except Exception as e:
         return {"request": f"GET /{system}/me", "status": None, "passed": False,
                 "error": str(e)[:100], "at": now()}
+
 
 def wait_dead(tid, system, token, window):
     start, n, ev = time.time(), 0, None
@@ -56,14 +70,17 @@ def wait_dead(tid, system, token, window):
         emit(tid, system, "sent", f"probe #{n}: token still works (HTTP {ev['status']}), waiting...", ev)
         time.sleep(2)
 
+
 def call(action, user, key):
     return httpx.request(action["method"], BASE + fill(action["path"], user),
                          json=fill(action.get("body"), user),
                          headers={"Idempotency-Key": key}, timeout=15)
 
+
 def current_action(system):
     a = db()["adapters"].find_one({"system": system})
     return a["action"] if a else default_action(system)
+
 
 def run_step(task, system, token):
     tid, user = task["_id"], task["employee"]
@@ -94,7 +111,8 @@ def run_step(task, system, token):
             r = call(action, user, key)
         except Exception as e:
             emit(tid, system, "sending", f"network error, retrying: {str(e)[:80]}")
-            time.sleep(2); continue
+            time.sleep(2)
+            continue
 
         if r.status_code >= 400:
             emit(tid, system, "failed", f"HTTP {r.status_code}: {r.text[:200]}", {"status": r.status_code})
@@ -106,12 +124,14 @@ def run_step(task, system, token):
             if not res["ok"]:
                 emit(tid, system, "failed", "no usable past fix found", res)
                 break
-            emit(tid, system, "adapted", res["note"], res)
+            emit(tid, system, "adapted",
+                 res["note"] + (f" | LLM check: {res['llm_note']}" if res.get("llm_note") else ""), res)
             continue
 
         set_step(tid, system, state="sent", sentAt=now())
         emit(tid, system, "sent", f"HTTP {r.status_code} is only a claim. Probing with {user}'s own token")
-        ev = wait_dead(tid, system, token, window=8 if attempt == 1 else 35)
+        ev = wait_dead(tid, system, token,
+                       window=WINDOWS.get(system, 8) if attempt == 1 else 35)
         if ev["passed"]:
             set_step(tid, system, state="verified", verifiedAt=now(), evidence=ev)
             emit(tid, system, "verified", f"token rejected (HTTP {ev['status']}): access is dead", ev)
@@ -122,6 +142,7 @@ def run_step(task, system, token):
     emit(tid, system, "failed", "gave up: access not proven dead")
     return False
 
+
 def claim(owner):
     t = now()
     return db()["tasks"].find_one_and_update(
@@ -131,23 +152,35 @@ def claim(owner):
                   "leaseExpiresAt": t + dt.timedelta(seconds=LEASE)}},
         sort=[("createdAt", 1)], return_document=ReturnDocument.AFTER)
 
+
 def heartbeat(tid, owner, stop):
     while not stop.is_set():
         r = db()["tasks"].update_one({"_id": tid, "leaseOwner": owner},
-            {"$set": {"leaseExpiresAt": now() + dt.timedelta(seconds=LEASE)}})
+                                     {"$set": {"leaseExpiresAt": now() + dt.timedelta(seconds=LEASE)}})
         if r.matched_count == 0:
             os._exit(1)                               # lost the lease: stop, never double-act
         time.sleep(2)
 
+
+def warm_up():
+    try:
+        from common.embed import embed
+        embed("warm up")
+    except Exception as e:
+        print(f"[warmup] skipped: {e!r}")
+
+
 def main():
     PID_FILE.write_text(str(os.getpid()))
     atexit.register(lambda: PID_FILE.unlink(missing_ok=True))
+    warm_up()
     owner = f"agent-{uuid.uuid4().hex[:6]}"
     print(f"{owner} up (pid {os.getpid()}), waiting for work...")
     task = None
     while task is None:
         task = claim(owner)
-        if task is None: time.sleep(1)
+        if task is None:
+            time.sleep(1)
     tid, user = task["_id"], task["employee"]
 
     if "steps" not in task:                           # new task (not a resume)
@@ -176,9 +209,10 @@ def main():
         "status": "done" if all_ok else "needs_attention", "leaseExpiresAt": None}})
     emit(tid, "task", "verified" if all_ok else "failed",
          "all access proven dead" if all_ok else "some steps unverified: needs a human")
+
+    summary = narrate.audit_summary(tid, user, all_ok)      # Groq: explains, never decides
+    if summary:
+        emit(tid, "task", "verified" if all_ok else "failed", "AUDIT SUMMARY (Groq): " + summary)
+
     stop.set()
     heartbeat_thread.join()
-
-if __name__ == "__main__":
-    while True:
-        main()
